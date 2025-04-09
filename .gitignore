@@ -50,3 +50,9 @@ modules.order
 Module.symvers
 Mkfile.old
 dkms.conf
+
+# My Personal C tmp files
+x
+
+# vscode settings
+.vscode/
