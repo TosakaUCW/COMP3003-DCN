@@ -410,19 +410,34 @@ class Session : public std::enable_shared_from_this<Session> {
     }
 
     // ——— 公共历史 20 条 ———
+    /* ===========================================================
+     * 只推送与当前用户相关的 20 条最近消息：
+     *   1) receiver = 'all'              → 公共聊天
+     *   2) sender   = <me>               → 我发出的私聊
+     *   3) receiver = <me>               → 发给我的私聊
+     * =========================================================== */
     void send_history() {
         json hist = {{"type", "history"}, {"messages", json::array()}};
-        sqlite3_stmt *st;
-        sqlite3_prepare_v2(g_db,
-                           "SELECT sender,message,timestamp FROM messages "
-                           "ORDER BY id DESC LIMIT 20;",
-                           -1, &st, 0);
+
+        sqlite3_stmt *st = nullptr;
+        const char *sql =
+            "SELECT sender, message, timestamp "
+            "FROM messages "
+            "WHERE receiver = 'all' "
+            "   OR sender   = ?1 "
+            "   OR receiver = ?1 "
+            "ORDER BY id DESC LIMIT 20;";
+
+        sqlite3_prepare_v2(g_db, sql, -1, &st, nullptr);
+        sqlite3_bind_text(st, 1, username_.c_str(), -1, SQLITE_STATIC);
+
         while (sqlite3_step(st) == SQLITE_ROW) {
             hist["messages"].push_back({{"sender", reinterpret_cast<const char *>(sqlite3_column_text(st, 0))},
                                         {"raw", reinterpret_cast<const char *>(sqlite3_column_text(st, 1))},
                                         {"time", reinterpret_cast<const char *>(sqlite3_column_text(st, 2))}});
         }
         sqlite3_finalize(st);
+
         queue_json(hist);
     }
 
