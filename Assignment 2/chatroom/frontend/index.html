@@ -1,4 +1,4 @@
-<!-- chatroom/frontend/index.html -->
+<!-- chatroom/frontend/index.html – Telegram 风格 & 自己气泡蓝色 -->
 <!DOCTYPE html>
 <html lang="zh-CN">
 
@@ -8,24 +8,31 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>聊天室</title>
     <style>
+        /*  ====== 布局 ====== */
         body {
-            font-family: 'Microsoft YaHei', Arial, sans-serif;
+            font-family: 'Segoe UI', Arial, 'Microsoft YaHei';
             margin: 0;
             padding: 0;
             display: flex;
             height: 100vh;
-            background-color: #f5f5f5;
+            background: #e5e5e5;
         }
 
         #sidebar {
-            width: 250px;
+            width: 260px;
+            display: flex;
+            flex-direction: column;
+            background: #fff;
             border-right: 1px solid #ddd;
-            background-color: #fff;
-            box-shadow: 0 0 5px rgba(0, 0, 0, 0.1);
+        }
+
+        #chat {
+            flex: 1;
             display: flex;
             flex-direction: column;
         }
 
+        /*  ====== 侧边栏 ====== */
         #sidebar-tabs {
             display: flex;
             border-bottom: 1px solid #ddd;
@@ -36,12 +43,13 @@
             text-align: center;
             padding: 10px;
             cursor: pointer;
-            background-color: #f0f0f0;
+            background: #f0f0f0;
+            user-select: none;
         }
 
         .sidebar-tab.active {
-            background-color: #fff;
-            border-bottom: 2px solid #2196F3;
+            background: #fff;
+            border-bottom: 2px solid #29B6F6;
         }
 
         #user-list,
@@ -57,132 +65,42 @@
             display: block;
         }
 
-        #chat {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-        }
-
-        #message-container {
-            flex: 1;
-            padding: 10px;
-            overflow-y: auto;
-            background: #f9f9f9;
-        }
-
-        .message {
-            margin-bottom: 8px;
-            padding: 8px;
-            border-radius: 4px;
-            max-width: 80%;
-            word-break: break-all;
-        }
-
-        .user-msg {
-            background-color: #e7f4ff;
-            border-left: 3px solid #2196F3;
-        }
-
-        .system-msg {
-            color: #888;
-            font-style: italic;
-            background-color: #f0f0f0;
-            padding: 5px;
-            border-radius: 4px;
-            text-align: center;
-            margin: 5px auto;
-            max-width: 90%;
-        }
-
-        .private-msg {
-            background-color: #ffe7f0;
-            border-left: 3px solid #E91E63;
-        }
-
-        .group-msg {
-            background-color: #e7ffe7;
-            border-left: 3px solid #4CAF50;
-        }
-
-        .history-title,
-        .separator {
-            text-align: center;
-            margin: 10px 0;
-            color: #666;
-            font-weight: bold;
-            border-bottom: 1px dashed #ccc;
-            padding-bottom: 5px;
-        }
-
-        #input-container {
-            display: flex;
-            border-top: 1px solid #ddd;
-            background-color: #fff;
-        }
-
-        #input {
-            flex: 1;
-            border: none;
-            padding: 10px;
-            font-size: 1rem;
-            outline: none;
-        }
-
-        #send-button {
-            border: none;
-            background-color: #2196F3;
-            color: white;
-            padding: 0 20px;
-            cursor: pointer;
-            transition: background-color 0.3s;
-        }
-
-        #send-button:hover {
-            background-color: #0b7dda;
-        }
-
-        #send-button:active {
-            background-color: #0a6bbd;
-        }
-
         .user,
         .group {
             padding: 8px;
             margin: 5px 0;
+            border-radius: 6px;
             cursor: pointer;
-            border-radius: 4px;
-            transition: background-color 0.2s;
+            transition: background .2s;
         }
 
         .user:hover,
         .group:hover {
-            background: #e3f2fd;
+            background: #E0F7FA;
         }
 
         .user.selected,
         .group.selected {
-            background: #bbdefb;
+            background: #B3E5FC;
         }
 
-        .user-count,
-        .group-count {
-            color: #666;
-            margin: 10px 0;
-            text-align: center;
-            font-size: 0.9em;
+        .group-owner-badge {
+            background: #29B6F6;
+            color: #fff;
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-size: 0.7em;
+            margin-left: 6px;
         }
 
+        /*  ====== 聊天区 ====== */
         #status-bar {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 5px 10px;
-            background-color: #f0f0f0;
+            padding: 6px 12px;
+            background: #f8f8f8;
             border-bottom: 1px solid #ddd;
-        }
-
-        #chat-target {
-            font-weight: bold;
         }
 
         #connection-status {
@@ -192,158 +110,291 @@
         }
 
         .connected {
-            background-color: #c8e6c9;
-            color: #388e3c;
+            background: #C8E6C9;
+            color: #388E3C;
         }
 
         .disconnected {
-            background-color: #ffcdd2;
-            color: #d32f2f;
+            background: #FFCDD2;
+            color: #D32F2F;
         }
 
-        .group-actions {
-            display: flex;
-            margin-top: 10px;
-            padding-top: 10px;
-            border-top: 1px solid #eee;
-        }
-
-        .group-actions button {
+        #message-container {
             flex: 1;
-            padding: 5px;
+            padding: 12px;
+            overflow-y: auto;
+            background: #F7F9FA;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .message {
+            margin-bottom: 8px;
+            padding: 8px 12px;
+            border-radius: 8px;
+            max-width: 75%;
+            line-height: 1.4;
+            word-break: break-all;
+            position: relative;
+        }
+
+        .user-msg {
+            background: #FFFFFF;
+            border: 1px solid #ECECEC;
+        }
+
+        .private-msg {
+            background: #FFEBEE;
+            border: 1px solid #F48FB1;
+        }
+
+        .group-msg {
+            background: #E8F5E9;
+            border: 1px solid #A5D6A7;
+        }
+
+        .self-msg {
+            align-self: flex-end;
+            background: #CFE9FF;
+            /* 蓝色 */
+            border: 1px solid #8CC9FF;
+        }
+
+        .system-msg {
+            align-self: center;
+            background: #f0f0f0;
+            color: #666;
+            font-style: italic;
             border: none;
-            background-color: #2196F3;
-            color: white;
-            border-radius: 3px;
+            margin: 6px 0;
+        }
+
+        .history-title,
+        .separator {
+            text-align: center;
+            margin: 10px 0;
+            color: #666;
+            font-weight: bold;
+            border-bottom: 1px dashed #ccc;
+            padding-bottom: 4px;
+        }
+
+        /*  ====== 输入框 ====== */
+        #input-container {
+            display: flex;
+            border-top: 1px solid #ddd;
+            background: #fff;
+        }
+
+        #input {
+            flex: 1;
+            border: none;
+            padding: 12px;
+            font-size: 1rem;
+            outline: none;
+            background: transparent;
+        }
+
+        #send-button {
+            border: none;
+            background: #29B6F6;
+            color: #fff;
+            padding: 0 24px;
+            font-size: 1rem;
             cursor: pointer;
-            margin: 0 5px;
-            font-size: 0.8em;
+            transition: background .2s;
         }
 
-        .group-actions button:hover {
-            background-color: #0b7dda;
+        #send-button:hover {
+            background: #039BE5;
         }
 
-        /* 模态框样式 */
+        #send-button:active {
+            background: #0288D1;
+        }
+
+        /*  ====== 群组成员模态框 ====== */
         .modal {
             display: none;
             position: fixed;
-            z-index: 1;
             left: 0;
             top: 0;
             width: 100%;
             height: 100%;
-            background-color: rgba(0, 0, 0, 0.4);
+            background: rgba(0, 0, 0, .4);
+            z-index: 100;
         }
 
         .modal-content {
-            background-color: #fefefe;
-            margin: 15% auto;
+            background: #fff;
+            border-radius: 8px;
+            width: 320px;
+            margin: 10% auto;
             padding: 20px;
-            border: 1px solid #888;
-            width: 300px;
-            border-radius: 5px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, .15);
         }
 
         .modal-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 15px;
+            margin-bottom: 12px;
         }
 
         .modal-title {
-            margin: 0;
             font-size: 1.2em;
+            margin: 0;
         }
 
         .close-button {
-            color: #aaa;
             font-size: 28px;
-            font-weight: bold;
             cursor: pointer;
+            color: #888;
         }
 
         .close-button:hover {
-            color: black;
-        }
-
-        .modal-body {
-            margin-bottom: 15px;
-        }
-
-        .modal-footer {
-            text-align: right;
+            color: #000;
         }
 
         .modal-input {
             width: 100%;
             padding: 8px;
-            margin: 5px 0;
-            box-sizing: border-box;
+            margin: 6px 0;
             border: 1px solid #ddd;
-            border-radius: 4px;
+            border-radius: 6px;
         }
 
         .modal-button {
-            padding: 8px 15px;
-            background-color: #2196F3;
-            color: white;
+            padding: 8px 16px;
             border: none;
-            border-radius: 4px;
+            border-radius: 6px;
             cursor: pointer;
+            color: #fff;
+            background: #29B6F6;
         }
 
         .modal-button:hover {
-            background-color: #0b7dda;
+            background: #039BE5;
         }
 
         .modal-button.cancel {
-            background-color: #f44336;
+            background: #F44336;
         }
 
         .modal-button.cancel:hover {
-            background-color: #d32f2f;
+            background: #D32F2F;
         }
 
         .group-member {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 5px;
+            background: #F5F5F5;
             margin: 5px 0;
-            background-color: #f9f9f9;
-            border-radius: 4px;
-        }
-
-        .group-member-name {
-            flex: 1;
+            padding: 6px;
+            border-radius: 6px;
         }
 
         .group-member-role {
-            margin-left: 10px;
             font-size: 0.8em;
             color: #666;
-        }
-
-        .group-member-actions {
-            display: flex;
+            margin-left: 10px;
         }
 
         .remove-member {
-            color: #f44336;
-            cursor: pointer;
+            color: #F44336;
             font-size: 1.2em;
+            cursor: pointer;
             margin-left: 10px;
         }
 
-        .group-owner-badge {
-            background-color: #2196F3;
-            color: white;
-            padding: 2px 5px;
-            border-radius: 3px;
-            font-size: 0.7em;
-            margin-left: 5px;
+        .group-actions {
+            display: flex;
+            margin-top: 10px;
+            padding-top: 8px;
+            border-top: 1px solid #eee;
+        }
+
+        .group-actions button {
+            flex: 1;
+            padding: 6px;
+            border: none;
+            background: #29B6F6;
+            color: #fff;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.8em;
+        }
+
+        .group-actions button:hover {
+            background: #039BE5;
+        }
+
+        /* ========= Telegram-like Bubble & Avatar ========== */
+        .msg-row {
+            display: flex;
+            align-items: flex-end;
+            margin-bottom: 10px;
+        }
+
+        .msg-row.outgoing {
+            justify-content: flex-end;
+        }
+
+        .avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            font-size: 0.9rem;
+            color: #fff;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin: 0 8px;
+            user-select: none;
+        }
+
+        .bubble {
+            position: relative;
+            max-width: 65%;
+            padding: 8px 12px;
+            border-radius: 12px;
+            line-height: 1.5;
+            word-break: break-word;
+            font-size: 0.95rem;
+        }
+
+        .incoming .bubble {
+            background: #FFFFFF;
+            border: 1px solid #E0E0E0;
+        }
+
+        .outgoing .bubble {
+            background: #C8E4FF;
+            /* Telegram 蓝色 */
+            color: #000;
+            border: 1px solid #9AC7FF;
+        }
+
+        /* 小尾巴：用伪元素做三角形 */
+        .incoming .bubble:after,
+        .outgoing .bubble:after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            height: 12px;
+            width: 12px;
+        }
+
+        .incoming .bubble:after {
+            left: -6px;
+            background: linear-gradient(225deg, #fff 50%, rgba(255, 255, 255, 0) 50%);
+        }
+
+        .outgoing .bubble:after {
+            right: -6px;
+            background: linear-gradient(45deg, #C8E4FF 50%, rgba(255, 255, 255, 0) 50%);
         }
     </style>
 </head>
@@ -359,11 +410,10 @@
         </div>
         <div id="group-list">
             <h3>我的群组</h3>
-            <div class="group-actions">
-                <button id="create-group-btn">创建群组</button>
-            </div>
+            <div class="group-actions"><button id="create-group-btn">创建群组</button></div>
         </div>
     </div>
+
     <div id="chat">
         <div id="status-bar">
             <span>聊天对象: <span id="chat-target">大厅</span></span>
@@ -371,7 +421,7 @@
         </div>
         <div id="message-container"></div>
         <div id="input-container">
-            <input type="text" id="input" placeholder="输入消息..." autocomplete="off" />
+            <input id="input" type="text" placeholder="输入消息..." autocomplete="off">
             <button id="send-button">发送</button>
         </div>
     </div>
@@ -380,37 +430,31 @@
     <div id="create-group-modal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
-                <h3 class="modal-title">创建新群组</h3>
-                <span class="close-button">&times;</span>
+                <h3 class="modal-title">创建新群组</h3><span class="close-button">&times;</span>
             </div>
-            <div class="modal-body">
-                <input type="text" id="group-name-input" class="modal-input" placeholder="输入群组名称">
-            </div>
-            <div class="modal-footer">
+            <input id="group-name-input" class="modal-input" placeholder="输入群组名称">
+            <div style="text-align:right;margin-top:10px;">
                 <button id="create-group-confirm" class="modal-button">创建</button>
                 <button class="modal-button cancel close-modal">取消</button>
             </div>
         </div>
     </div>
 
-    <!-- 管理群组成员模态框 -->
+    <!-- 管理成员模态框 -->
     <div id="manage-members-modal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
-                <h3 class="modal-title">群组成员</h3>
-                <span class="close-button">&times;</span>
+                <h3 class="modal-title">群组成员</h3><span class="close-button">&times;</span>
             </div>
-            <div class="modal-body">
-                <div id="members-list"></div>
-                <div id="add-member-container">
-                    <h4>添加成员</h4>
-                    <div style="display: flex;">
-                        <input type="text" id="new-member-input" class="modal-input" placeholder="输入用户名">
-                        <button id="add-member-btn" class="modal-button">添加</button>
-                    </div>
+            <div id="members-list"></div>
+            <div id="add-member-container" style="display:none;margin-top:10px;">
+                <h4 style="margin:6px 0;">添加成员</h4>
+                <div style="display:flex;gap:6px;">
+                    <input id="new-member-input" class="modal-input" placeholder="输入用户名">
+                    <button id="add-member-btn" class="modal-button">添加</button>
                 </div>
             </div>
-            <div class="modal-footer">
+            <div style="text-align:right;margin-top:12px;">
                 <button class="modal-button close-modal">关闭</button>
             </div>
         </div>
