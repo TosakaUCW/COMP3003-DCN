@@ -61,3 +61,6 @@ x
 ans.html
 
 .DS_Store
+
+# database files
+*.db
