@@ -294,68 +294,97 @@ class Session : public std::enable_shared_from_this<Session> {
 
     void read() {
         ws_.async_read(buffer_, [self = shared_from_this()](boost::system::error_code ec, std::size_t) {
-            if (!ec) {
-                auto msg = boost::beast::buffers_to_string(self->buffer_.data());
-                self->buffer_.consume(self->buffer_.size());
+            if (ec) {
+                // WebSocket 连接关闭，移除该会话
+                std::string leave_msg = "系统: 用户 " + self->username_ + " 已离开聊天室";
 
-                // 处理私聊消息：以 @target 开头
-                if (!msg.empty() && msg[0] == '@') {
-                    auto pos = msg.find(' ');
-                    if (pos != std::string::npos) {
-                        std::string target = msg.substr(1, pos - 1); // 获取目标用户名
-                        std::string content = msg.substr(pos + 1);   // 获取消息内容
-                        std::string time_prefix = get_time_str();
-                        std::string formatted_msg = time_prefix + self->username_ + " (私) 对 " + target + " 说: " + content;
+                // 从会话列表移除
+                self->sessions_.erase(self);
 
-                        bool target_found = false;
-                        // 查找目标用户并发送消息
-                        for (auto &s : self->sessions_) {
-                            if (s->username_ == target) {
-                                target_found = true;
-                                s->ws_.async_write(
-                                    boost::asio::buffer(formatted_msg),
-                                    [](boost::system::error_code, std::size_t) {});
+                // 更新并发送新的用户列表
+                std::string user_list = "在线用户列表：";
+                for (auto &session : self->sessions_) {
+                    user_list += session->username_ + ",";
+                }
+                if (!self->sessions_.empty()) {
+                    user_list.pop_back(); // 移除最后一个逗号
+                }
 
-                                // 给发送者自己也发一份
-                                self->ws_.async_write(
-                                    boost::asio::buffer(formatted_msg),
-                                    [](boost::system::error_code, std::size_t) {});
-
-                                // 保存私聊消息到数据库
-                                save_message_to_db(self->username_, target, formatted_msg);
-                                break;
-                            }
-                        }
-
-                        if (!target_found) {
-                            std::string error_msg = "系统: 用户 " + target + " 不在线或不存在";
-                            self->ws_.async_write(
-                                boost::asio::buffer(error_msg),
+                for (auto &session : self->sessions_) {
+                    session->ws_.async_write(
+                        boost::asio::buffer(leave_msg),
+                        [user_list, session](boost::system::error_code, std::size_t) {
+                            session->ws_.async_write(
+                                boost::asio::buffer(user_list),
                                 [](boost::system::error_code, std::size_t) {});
-                        }
-
-                        self->read();
-                        return;
-                    }
+                        });
                 }
 
-                // 群聊消息（不是私聊消息）
-                std::string time_prefix = get_time_str();
-                std::string full_msg = time_prefix + self->username_ + " : " + msg;
-
-                // 群聊消息广播给所有在线用户
-                for (auto &s : self->sessions_) {
-                    s->ws_.text(true);
-                    s->ws_.async_write(
-                        boost::asio::buffer(full_msg),
-                        [](boost::system::error_code, std::size_t) {});
-                }
-
-                // 保存群聊消息到数据库
-                save_message_to_db(self->username_, "all", full_msg);
-
-                self->read();
+                // 退出
+                return;
             }
+
+            // 继续正常的消息处理
+            auto msg = boost::beast::buffers_to_string(self->buffer_.data());
+            self->buffer_.consume(self->buffer_.size());
+
+            // 处理私聊消息：以 @target 开头
+            if (!msg.empty() && msg[0] == '@') {
+                auto pos = msg.find(' ');
+                if (pos != std::string::npos) {
+                    std::string target = msg.substr(1, pos - 1); // 获取目标用户名
+                    std::string content = msg.substr(pos + 1);   // 获取消息内容
+                    std::string time_prefix = get_time_str();
+                    std::string formatted_msg = time_prefix + self->username_ + " (私) 对 " + target + " 说: " + content;
+
+                    bool target_found = false;
+                    // 查找目标用户并发送消息
+                    for (auto &s : self->sessions_) {
+                        if (s->username_ == target) {
+                            target_found = true;
+                            s->ws_.async_write(
+                                boost::asio::buffer(formatted_msg),
+                                [](boost::system::error_code, std::size_t) {});
+
+                            // 给发送者自己也发一份
+                            self->ws_.async_write(
+                                boost::asio::buffer(formatted_msg),
+                                [](boost::system::error_code, std::size_t) {});
+
+                            // 保存私聊消息到数据库
+                            save_message_to_db(self->username_, target, formatted_msg);
+                            break;
+                        }
+                    }
+
+                    if (!target_found) {
+                        std::string error_msg = "系统: 用户 " + target + " 不在线或不存在";
+                        self->ws_.async_write(
+                            boost::asio::buffer(error_msg),
+                            [](boost::system::error_code, std::size_t) {});
+                    }
+
+                    self->read();
+                    return;
+                }
+            }
+
+            // 群聊消息（不是私聊消息）
+            std::string time_prefix = get_time_str();
+            std::string full_msg = time_prefix + self->username_ + " : " + msg;
+
+            // 群聊消息广播给所有在线用户
+            for (auto &s : self->sessions_) {
+                s->ws_.text(true);
+                s->ws_.async_write(
+                    boost::asio::buffer(full_msg),
+                    [](boost::system::error_code, std::size_t) {});
+            }
+
+            // 保存群聊消息到数据库
+            save_message_to_db(self->username_, "all", full_msg);
+
+            self->read();
         });
     }
 };
@@ -367,7 +396,9 @@ void do_accept(tcp::acceptor &acceptor,
     acceptor.async_accept(
         [&](boost::system::error_code ec, tcp::socket socket) {
             if (!ec) {
-                std::make_shared<Session>(std::move(socket), sessions)->start();
+                auto new_session = std::make_shared<Session>(std::move(socket), sessions);
+                sessions.insert(new_session);
+                new_session->start();
             }
             do_accept(acceptor, ioc, sessions);
         });
