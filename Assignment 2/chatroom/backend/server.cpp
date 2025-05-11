@@ -2,428 +2,585 @@
 #include <boost/beast.hpp>
 #include <boost/beast/websocket.hpp>
 #include <ctime>
-#include <fstream>
+#include <deque>
 #include <iomanip>
 #include <iostream>
 #include <memory>
 #include <set>
-#include <sqlite3.h>
 #include <sstream>
 #include <unordered_map>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+#include <sqlite3.h>
+
 using tcp = boost::asio::ip::tcp;
-namespace websocket = boost::beast::websocket;
+namespace ws = boost::beast::websocket;
+using json = nlohmann::json;
 
-// SQLite 数据库
-sqlite3 *db;
-const std::string DB_FILE = "chatserver.db";
+// ────────── SQLite 基础 ──────────
+sqlite3 *g_db = nullptr;
+constexpr char DB_FILE[] = "chatserver.db";
 
-// 获取当前时间的字符串表示
-std::string get_time_str() {
-    auto t = std::time(nullptr);
+inline std::string now_str() {
+    std::time_t t = std::time(nullptr);
     std::tm tm = *std::localtime(&t);
-    std::stringstream ss;
-    ss << std::put_time(&tm, "[%Y-%m-%d %H:%M:%S] ");
+    std::ostringstream ss;
+    ss << '[' << std::put_time(&tm, "%Y-%m-%d %H:%M:%S") << ']';
     return ss.str();
 }
-
-// 打开数据库连接
-bool open_db() {
-    int rc = sqlite3_open(DB_FILE.c_str(), &db);
-    if (rc) {
-        std::cerr << "无法打开数据库: " << sqlite3_errmsg(db) << std::endl;
+bool exec_sql(std::string const &sql) {
+    char *err = nullptr;
+    if (sqlite3_exec(g_db, sql.c_str(), nullptr, nullptr, &err) != SQLITE_OK) {
+        std::cerr << "SQL error: " << err << '\n';
+        sqlite3_free(err);
         return false;
     }
     return true;
 }
-
-// 执行 SQL 查询
-int execute_sql(const std::string &sql) {
-    char *err_msg = nullptr;
-    int rc = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, &err_msg);
-    if (rc != SQLITE_OK) {
-        std::cerr << "SQL 错误: " << err_msg << std::endl;
-        sqlite3_free(err_msg);
-        return rc;
-    }
-    return SQLITE_OK;
-}
-
-// 初始化数据库
-void init_db() {
-    // 创建用户表
-    std::string create_user_table = "CREATE TABLE IF NOT EXISTS users ("
-                                    "username TEXT PRIMARY KEY, "
-                                    "password TEXT NOT NULL);";
-    execute_sql(create_user_table);
-
-    // 创建消息历史表
-    std::string create_msg_table = "CREATE TABLE IF NOT EXISTS messages ("
-                                   "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-                                   "sender TEXT, "
-                                   "receiver TEXT, "
-                                   "message TEXT, "
-                                   "timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);";
-    execute_sql(create_msg_table);
-}
-
-// 从数据库验证用户
-bool verify_user(const std::string &username, const std::string &password) {
-    sqlite3_stmt *stmt;
-    std::string query = "SELECT password FROM users WHERE username = ?";
-
-    if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
-        std::cerr << "查询失败: " << sqlite3_errmsg(db) << std::endl;
+bool db_open() {
+    if (sqlite3_open(DB_FILE, &g_db) != SQLITE_OK) {
+        std::cerr << "无法打开数据库\n";
         return false;
     }
-
-    sqlite3_bind_text(stmt, 1, username.c_str(), -1, SQLITE_STATIC);
-
-    int rc = sqlite3_step(stmt);
-    if (rc == SQLITE_ROW) {
-        const char *db_password = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 0));
-        if (db_password && password == db_password) {
-            sqlite3_finalize(stmt);
-            return true;
-        }
-    }
-
-    sqlite3_finalize(stmt);
-    return false;
-}
-
-// 注册新用户
-bool register_user(const std::string &username, const std::string &password) {
-    // 检查用户名是否已存在
-    sqlite3_stmt *stmt;
-    std::string check_query = "SELECT 1 FROM users WHERE username = ?";
-
-    if (sqlite3_prepare_v2(db, check_query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
-        std::cerr << "查询失败: " << sqlite3_errmsg(db) << std::endl;
-        return false;
-    }
-
-    sqlite3_bind_text(stmt, 1, username.c_str(), -1, SQLITE_STATIC);
-    int rc = sqlite3_step(stmt);
-    if (rc == SQLITE_ROW) {
-        sqlite3_finalize(stmt);
-        return false; // 用户名已存在
-    }
-
-    sqlite3_finalize(stmt);
-
-    // 插入新用户
-    std::string insert_query = "INSERT INTO users (username, password) VALUES (?, ?)";
-    if (sqlite3_prepare_v2(db, insert_query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
-        std::cerr << "插入用户失败: " << sqlite3_errmsg(db) << std::endl;
-        return false;
-    }
-
-    sqlite3_bind_text(stmt, 1, username.c_str(), -1, SQLITE_STATIC);
-    sqlite3_bind_text(stmt, 2, password.c_str(), -1, SQLITE_STATIC);
-
-    if (sqlite3_step(stmt) != SQLITE_DONE) {
-        std::cerr << "插入用户失败: " << sqlite3_errmsg(db) << std::endl;
-        sqlite3_finalize(stmt);
-        return false;
-    }
-
-    sqlite3_finalize(stmt);
     return true;
 }
-
-// 保存消息到数据库
-void save_message_to_db(const std::string &sender, const std::string &receiver, const std::string &message) {
-    std::string query = "INSERT INTO messages (sender, receiver, message) VALUES (?, ?, ?);";
-    sqlite3_stmt *stmt;
-
-    if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
-        std::cerr << "插入消息失败: " << sqlite3_errmsg(db) << std::endl;
-        return;
-    }
-
-    sqlite3_bind_text(stmt, 1, sender.c_str(), -1, SQLITE_STATIC);
-    sqlite3_bind_text(stmt, 2, receiver.c_str(), -1, SQLITE_STATIC);
-    sqlite3_bind_text(stmt, 3, message.c_str(), -1, SQLITE_STATIC);
-
-    if (sqlite3_step(stmt) != SQLITE_DONE) {
-        std::cerr << "插入消息失败: " << sqlite3_errmsg(db) << std::endl;
-    }
-    sqlite3_finalize(stmt);
+void db_init() {
+    exec_sql("PRAGMA foreign_keys=ON;");
+    exec_sql("CREATE TABLE IF NOT EXISTS users("
+             "username TEXT PRIMARY KEY, password TEXT NOT NULL);");
+    exec_sql("CREATE TABLE IF NOT EXISTS messages("
+             "id INTEGER PRIMARY KEY AUTOINCREMENT, sender TEXT, receiver TEXT, "
+             "message TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);");
+    exec_sql("CREATE TABLE IF NOT EXISTS groups("
+             "id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, owner TEXT);");
+    exec_sql("CREATE TABLE IF NOT EXISTS group_members("
+             "id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER, username TEXT, "
+             "is_owner INTEGER DEFAULT 0, UNIQUE(group_id,username), "
+             "FOREIGN KEY(group_id) REFERENCES groups(id) ON DELETE CASCADE);");
+    exec_sql("CREATE TABLE IF NOT EXISTS group_messages("
+             "id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER, sender TEXT, "
+             "message TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, "
+             "FOREIGN KEY(group_id) REFERENCES groups(id) ON DELETE CASCADE);");
 }
 
+// ── 前向声明
+class Session;
+void broadcast_json(json const &);
+
+// ── 在线会话集合
+std::set<std::shared_ptr<Session>> g_sessions;
+
+// ── SQLite 辅助
+bool user_exists(std::string const &u) {
+    sqlite3_stmt *st;
+    sqlite3_prepare_v2(g_db, "SELECT 1 FROM users WHERE username=?;", -1, &st, 0);
+    sqlite3_bind_text(st, 1, u.c_str(), -1, SQLITE_STATIC);
+    bool ok = sqlite3_step(st) == SQLITE_ROW;
+    sqlite3_finalize(st);
+    return ok;
+}
+bool verify_user(std::string const &u, std::string const &p) {
+    sqlite3_stmt *st;
+    sqlite3_prepare_v2(g_db, "SELECT password FROM users WHERE username=?;", -1, &st, 0);
+    sqlite3_bind_text(st, 1, u.c_str(), -1, SQLITE_STATIC);
+    bool ok = false;
+    if (sqlite3_step(st) == SQLITE_ROW)
+        ok = p == reinterpret_cast<const char *>(sqlite3_column_text(st, 0));
+    sqlite3_finalize(st);
+    return ok;
+}
+bool register_user(std::string const &u, std::string const &p) {
+    if (user_exists(u))
+        return false;
+    sqlite3_stmt *st;
+    sqlite3_prepare_v2(g_db,
+                       "INSERT INTO users(username,password) VALUES(?,?);",
+                       -1, &st, 0);
+    sqlite3_bind_text(st, 1, u.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(st, 2, p.c_str(), -1, SQLITE_STATIC);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+void save_public(std::string const &sender, std::string const &msg) {
+    sqlite3_stmt *st;
+    sqlite3_prepare_v2(g_db,
+                       "INSERT INTO messages(sender,receiver,message) VALUES(?,?,?);",
+                       -1, &st, 0);
+    sqlite3_bind_text(st, 1, sender.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(st, 2, "all", -1, SQLITE_STATIC);
+    sqlite3_bind_text(st, 3, msg.c_str(), -1, SQLITE_STATIC);
+    sqlite3_step(st);
+    sqlite3_finalize(st);
+}
+void save_private(std::string const &sender, std::string const &target,
+                  std::string const &msg) {
+    sqlite3_stmt *st;
+    sqlite3_prepare_v2(g_db,
+                       "INSERT INTO messages(sender,receiver,message) VALUES(?,?,?);",
+                       -1, &st, 0);
+    sqlite3_bind_text(st, 1, sender.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(st, 2, target.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(st, 3, msg.c_str(), -1, SQLITE_STATIC);
+    sqlite3_step(st);
+    sqlite3_finalize(st);
+}
+bool user_in_group(int gid, std::string const &u) {
+    sqlite3_stmt *st;
+    sqlite3_prepare_v2(g_db,
+                       "SELECT 1 FROM group_members WHERE group_id=? AND username=?;",
+                       -1, &st, 0);
+    sqlite3_bind_int(st, 1, gid);
+    sqlite3_bind_text(st, 2, u.c_str(), -1, SQLITE_STATIC);
+    bool ok = sqlite3_step(st) == SQLITE_ROW;
+    sqlite3_finalize(st);
+    return ok;
+}
+bool is_owner(int gid, std::string const &u) {
+    sqlite3_stmt *st;
+    sqlite3_prepare_v2(g_db,
+                       "SELECT is_owner FROM group_members WHERE group_id=? AND username=?;",
+                       -1, &st, 0);
+    sqlite3_bind_int(st, 1, gid);
+    sqlite3_bind_text(st, 2, u.c_str(), -1, SQLITE_STATIC);
+    bool owner = false;
+    if (sqlite3_step(st) == SQLITE_ROW)
+        owner = sqlite3_column_int(st, 0) != 0;
+    sqlite3_finalize(st);
+    return owner;
+}
+
+// ─────────────────────── Session ───────────────────────
 class Session : public std::enable_shared_from_this<Session> {
-    websocket::stream<tcp::socket> ws_;
-    std::set<std::shared_ptr<Session>> &sessions_;
-    boost::beast::flat_buffer buffer_;
+    ws::stream<tcp::socket> ws_;
+    boost::beast::flat_buffer buf_;
     std::string username_;
 
+    // 发送队列
+    std::deque<std::string> write_q_;
+
+    // 启动真正写
+    void do_write() {
+        if (write_q_.empty())
+            return;
+        auto self = shared_from_this();
+        ws_.text(true);
+        ws_.async_write(boost::asio::buffer(write_q_.front()),
+                        [self](boost::system::error_code ec, std::size_t) {
+                            if (!ec) {
+                                self->write_q_.pop_front();
+                                self->do_write();
+                            }
+                        });
+    }
+    // 投递文本（JSON 或普通）
+    void queue_text(std::string text) {
+        auto self = shared_from_this();
+        boost::asio::post(ws_.get_executor(),
+                          [self, txt = std::move(text)]() mutable {
+                              bool writing = !self->write_q_.empty();
+                              self->write_q_.push_back(std::move(txt));
+                              if (!writing)
+                                  self->do_write();
+                          });
+    }
+    // helpers
+    void queue_json(json const &j) { queue_text(j.dump()); }
+
   public:
-    Session(tcp::socket socket, std::set<std::shared_ptr<Session>> &sessions)
-        : ws_(std::move(socket)), sessions_(sessions) {}
+    explicit Session(tcp::socket sock) : ws_(std::move(sock)) {}
+    ws::stream<tcp::socket> &ws() { return ws_; }
+    std::string const &name() const { return username_; }
+
+    void push_json(const json &j) { queue_json(j); }
 
     void start() {
         ws_.async_accept([self = shared_from_this()](boost::system::error_code ec) {
             if (!ec) {
                 self->ws_.text(true);
-                const std::string prompt = "请输入用户名,密码（格式 user,pass）或注册（格式 register username, password）：";
-                self->ws_.async_write(
-                    boost::asio::buffer(prompt),
-                    [self](boost::system::error_code, std::size_t) {
-                        self->read_login();
-                    });
+                self->prompt_login();
             }
         });
     }
-
-    const std::string &username() const { return username_; }
 
   private:
+    // ——— 登录流程 ———
+    void prompt_login() {
+        static const std::string prompt =
+            "请输入用户名,密码（格式 user,pass）或注册（格式 register username, password）：";
+        queue_text(prompt);
+        read_login();
+    }
+    static void trim(std::string &s) {
+        auto issp = [](int c) { return std::isspace(c); };
+        s.erase(s.begin(), std::find_if_not(s.begin(), s.end(), issp));
+        s.erase(std::find_if_not(s.rbegin(), s.rend(), issp).base(), s.end());
+    }
     void read_login() {
-        ws_.async_read(buffer_, [self = shared_from_this()](boost::system::error_code ec, std::size_t) {
-            if (ec)
-                return;
+        ws_.async_read(buf_,
+                       [self = shared_from_this()](boost::system::error_code ec, std::size_t) {
+                           if (ec)
+                               return;
+                           std::string msg = boost::beast::buffers_to_string(self->buf_.data());
+                           self->buf_.consume(self->buf_.size());
+                           trim(msg);
 
-            auto msg = boost::beast::buffers_to_string(self->buffer_.data());
-            self->buffer_.consume(self->buffer_.size());
+                           // 注册
+                           if (msg.rfind("register", 0) == 0) {
+                               msg.erase(0, 8);
+                               trim(msg);
+                               auto pos = msg.find(',');
+                               if (pos != std::string::npos) {
+                                   std::string u = msg.substr(0, pos), p = msg.substr(pos + 1);
+                                   trim(u);
+                                   trim(p);
+                                   if (register_user(u, p))
+                                       self->queue_text("注册成功！请登录。\n");
+                                   else
+                                       self->queue_text("注册失败，用户名已存在。\n");
+                               }
+                               self->prompt_login();
+                               return;
+                           }
 
-            std::istringstream ss(msg);
-            std::string cmd, user, pass;
+                           // 登录
+                           auto pos = msg.find(',');
+                           if (pos == std::string::npos) {
+                               self->prompt_login();
+                               return;
+                           }
+                           std::string u = msg.substr(0, pos), p = msg.substr(pos + 1);
+                           trim(u);
+                           trim(p);
+                           if (!verify_user(u, p)) {
+                               self->queue_text("登录失败，请重新输入 user,pass：");
+                               self->read_login();
+                               return;
+                           }
 
-            if (msg.find("register") == 0) {
-                // 注册命令
-                std::getline(ss, cmd, ' ');
-                if (std::getline(ss, user, ',') && std::getline(ss, pass)) {
-                    std::cout << "注册尝试 - 用户名: " << user << std::endl;
-                    if (register_user(user, pass)) {
-                        self->ws_.async_write(
-                            boost::asio::buffer("注册成功！请使用该用户名和密码登录。\n"),
-                            [self](boost::system::error_code ec, std::size_t) {
-                                self->ws_.async_write(
-                                    boost::asio::buffer("请输入用户名,密码（格式 user,pass）："),
-                                    [self](boost::system::error_code, std::size_t) {
-                                        self->read_login();
-                                    });
-                            });
-                    } else {
-                        self->ws_.async_write(
-                            boost::asio::buffer("注册失败，用户名已存在。\n"),
-                            [self](boost::system::error_code, std::size_t) {
-                                self->read_login();
-                            });
-                    }
-                }
-                return;
-            }
+                           self->username_ = u;
+                           g_sessions.insert(self);
+                           self->queue_text("登录成功，欢迎 " + u + "\n");
+                           self->push_meta();
+                           self->send_history();
 
-            if (std::getline(ss, user, ',') && std::getline(ss, pass)) {
-                std::cout << "登录尝试 - 用户名: " << user << std::endl;
+                           // 广播更新用户列表
+                           json uj = {{"type", "users_list"}, {"users", json::array()}};
+                           for (auto &s : g_sessions)
+                               uj["users"].push_back(s->name());
+                           broadcast_json(uj);
 
-                if (verify_user(user, pass)) {
-                    self->username_ = user;
-                    self->sessions_.insert(self);
-
-                    // 登录成功，发送欢迎消息
-                    std::string welcome = "登录成功，欢迎 " + user + "\n";
-                    self->ws_.async_write(
-                        boost::asio::buffer(welcome),
-                        [self](boost::system::error_code ec, std::size_t) {
-                            if (!ec)
-                                self->send_history();
-                        });
-                    return;
-                }
-            }
-
-            // 登录失败，提示重试
-            const std::string retry = "登录失败，请重新输入 user,pass：";
-            self->ws_.async_write(
-                boost::asio::buffer(retry),
-                [self](boost::system::error_code, std::size_t) {
-                    self->read_login();
-                });
-        });
+                           self->do_read();
+                       });
     }
 
-    void send_history() {
-        // 发送消息历史
-        std::string history_msg = "=== 最近20条消息历史 ===\n";
-        sqlite3_stmt *stmt;
-        std::string query = "SELECT sender, message FROM messages ORDER BY timestamp DESC LIMIT 20;";
+    // ——— 推送在线用户/群组列表 ———
+    void push_meta() {
+        json uj = {{"type", "users_list"}, {"users", json::array()}};
+        for (auto &s : g_sessions)
+            uj["users"].push_back(s->name());
+        queue_json(uj);
 
-        if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
-            std::cerr << "查询历史记录失败: " << sqlite3_errmsg(db) << std::endl;
+        json gl = {{"type", "groups_list"}, {"groups", json::array()}};
+        sqlite3_stmt *st;
+        sqlite3_prepare_v2(g_db,
+                           "SELECT g.id,g.name,gm.is_owner "
+                           "FROM groups g JOIN group_members gm ON gm.group_id=g.id "
+                           "WHERE gm.username=?;",
+                           -1, &st, 0);
+        sqlite3_bind_text(st, 1, username_.c_str(), -1, SQLITE_STATIC);
+        while (sqlite3_step(st) == SQLITE_ROW) {
+            gl["groups"].push_back({{"id", sqlite3_column_int(st, 0)},
+                                    {"name", reinterpret_cast<const char *>(sqlite3_column_text(st, 1))},
+                                    {"is_owner", sqlite3_column_int(st, 2) != 0}});
+        }
+        sqlite3_finalize(st);
+        queue_json(gl);
+    }
+
+    // ——— 公共历史 20 条 ———
+    void send_history() {
+        json hist = {{"type", "history"}, {"messages", json::array()}};
+        sqlite3_stmt *st;
+        sqlite3_prepare_v2(g_db,
+                           "SELECT sender,message,timestamp FROM messages "
+                           "ORDER BY id DESC LIMIT 20;",
+                           -1, &st, 0);
+        while (sqlite3_step(st) == SQLITE_ROW) {
+            hist["messages"].push_back({{"sender", reinterpret_cast<const char *>(sqlite3_column_text(st, 0))},
+                                        {"raw", reinterpret_cast<const char *>(sqlite3_column_text(st, 1))},
+                                        {"time", reinterpret_cast<const char *>(sqlite3_column_text(st, 2))}});
+        }
+        sqlite3_finalize(st);
+        queue_json(hist);
+    }
+
+    // ——— 主读循环 ———
+    void do_read() {
+        ws_.async_read(buf_,
+                       [self = shared_from_this()](boost::system::error_code ec, std::size_t) {
+                           if (ec) {
+                               self->on_close();
+                               return;
+                           }
+                           std::string msg = boost::beast::buffers_to_string(self->buf_.data());
+                           self->buf_.consume(self->buf_.size());
+                           self->handle_msg(msg);
+                           self->do_read();
+                       });
+    }
+    void on_close() {
+        g_sessions.erase(shared_from_this());
+        json uj = {{"type", "users_list"}, {"users", json::array()}};
+        for (auto &s : g_sessions)
+            uj["users"].push_back(s->name());
+        broadcast_json(uj);
+    }
+
+    // ——— 处理单条消息 ———
+    void handle_msg(std::string const &raw) {
+        if (!raw.empty() && raw.front() == '{') {
+            handle_json(raw);
             return;
         }
 
-        int count = 0;
-        while (sqlite3_step(stmt) == SQLITE_ROW && count < 20) {
-            std::string sender = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 0));
-            std::string message = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 1));
-            history_msg += "[" + sender + "] " + message + "\n";
-            count++;
-        }
-
-        history_msg += "=== 历史消息结束 ===\n";
-        ws_.async_write(
-            boost::asio::buffer(history_msg),
-            [self = shared_from_this()](boost::system::error_code ec, std::size_t) {
-                if (!ec)
-                    self->send_users_list();
-            });
-    }
-
-    void send_users_list() {
-        std::string user_list = "在线用户列表：";
-        for (auto &session : sessions_) {
-            user_list += session->username_ + ",";
-        }
-        if (!sessions_.empty()) {
-            user_list.pop_back(); // 移除最后一个逗号
-        }
-
-        for (auto &session : sessions_) {
-            session->ws_.async_write(
-                boost::asio::buffer(user_list),
-                [](boost::system::error_code, std::size_t) {});
-        }
-
-        read(); // 登录成功后进入消息读取
-    }
-
-    void read() {
-        ws_.async_read(buffer_, [self = shared_from_this()](boost::system::error_code ec, std::size_t) {
-            if (ec) {
-                // WebSocket 连接关闭，移除该会话
-                std::string leave_msg = "系统: 用户 " + self->username_ + " 已离开聊天室";
-
-                // 从会话列表移除
-                self->sessions_.erase(self);
-
-                // 更新并发送新的用户列表
-                std::string user_list = "在线用户列表：";
-                for (auto &session : self->sessions_) {
-                    user_list += session->username_ + ",";
-                }
-                if (!self->sessions_.empty()) {
-                    user_list.pop_back(); // 移除最后一个逗号
-                }
-
-                for (auto &session : self->sessions_) {
-                    session->ws_.async_write(
-                        boost::asio::buffer(leave_msg),
-                        [user_list, session](boost::system::error_code, std::size_t) {
-                            session->ws_.async_write(
-                                boost::asio::buffer(user_list),
-                                [](boost::system::error_code, std::size_t) {});
-                        });
-                }
-
-                // 退出
+        // 私聊
+        if (!raw.empty() && raw[0] == '@') {
+            auto pos = raw.find(' ');
+            if (pos == std::string::npos)
                 return;
-            }
-
-            // 继续正常的消息处理
-            auto msg = boost::beast::buffers_to_string(self->buffer_.data());
-            self->buffer_.consume(self->buffer_.size());
-
-            // 处理私聊消息：以 @target 开头
-            if (!msg.empty() && msg[0] == '@') {
-                auto pos = msg.find(' ');
-                if (pos != std::string::npos) {
-                    std::string target = msg.substr(1, pos - 1); // 获取目标用户名
-                    std::string content = msg.substr(pos + 1);   // 获取消息内容
-                    std::string time_prefix = get_time_str();
-                    std::string formatted_msg = time_prefix + self->username_ + " (私) 对 " + target + " 说: " + content;
-
-                    bool target_found = false;
-                    // 查找目标用户并发送消息
-                    for (auto &s : self->sessions_) {
-                        if (s->username_ == target) {
-                            target_found = true;
-                            s->ws_.async_write(
-                                boost::asio::buffer(formatted_msg),
-                                [](boost::system::error_code, std::size_t) {});
-
-                            // 给发送者自己也发一份
-                            self->ws_.async_write(
-                                boost::asio::buffer(formatted_msg),
-                                [](boost::system::error_code, std::size_t) {});
-
-                            // 保存私聊消息到数据库
-                            save_message_to_db(self->username_, target, formatted_msg);
-                            break;
-                        }
-                    }
-
-                    if (!target_found) {
-                        std::string error_msg = "系统: 用户 " + target + " 不在线或不存在";
-                        self->ws_.async_write(
-                            boost::asio::buffer(error_msg),
-                            [](boost::system::error_code, std::size_t) {});
-                    }
-
-                    self->read();
-                    return;
+            std::string target = raw.substr(1, pos - 1), text = raw.substr(pos + 1);
+            std::string out = now_str() + " " + username_ + " (私) 对 " + target + " 说: " + text;
+            bool found = false;
+            for (auto &s : g_sessions)
+                if (s->name() == target) {
+                    found = true;
+                    s->queue_text(out);
                 }
-            }
+            queue_text(out); // 回显
+            save_private(username_, target, out);
+            if (!found)
+                queue_text("系统: 用户 " + target + " 不在线或不存在");
+            return;
+        }
 
-            // 群聊消息（不是私聊消息）
-            std::string time_prefix = get_time_str();
-            std::string full_msg = time_prefix + self->username_ + " : " + msg;
-
-            // 群聊消息广播给所有在线用户
-            for (auto &s : self->sessions_) {
-                s->ws_.text(true);
-                s->ws_.async_write(
-                    boost::asio::buffer(full_msg),
-                    [](boost::system::error_code, std::size_t) {});
-            }
-
-            // 保存群聊消息到数据库
-            save_message_to_db(self->username_, "all", full_msg);
-
-            self->read();
-        });
+        // 公共
+        std::string out = now_str() + " " + username_ + " : " + raw;
+        for (auto &s : g_sessions)
+            s->queue_text(out);
+        save_public(username_, out);
     }
-};
 
-// 递归异步接受新连接
-void do_accept(tcp::acceptor &acceptor,
-               boost::asio::io_context &ioc,
-               std::set<std::shared_ptr<Session>> &sessions) {
-    acceptor.async_accept(
-        [&](boost::system::error_code ec, tcp::socket socket) {
-            if (!ec) {
-                auto new_session = std::make_shared<Session>(std::move(socket), sessions);
-                sessions.insert(new_session);
-                new_session->start();
-            }
-            do_accept(acceptor, ioc, sessions);
+    // ——— JSON 协议 ———
+    void handle_json(std::string const &s) {
+        json j;
+        try {
+            j = json::parse(s);
+        } catch (...) {
+            return;
+        }
+        std::string type = j.value("type", "");
+        if (type == "create_group")
+            on_create_group(j);
+        else if (type == "add_group_member")
+            on_add_member(j);
+        else if (type == "remove_group_member")
+            on_remove_member(j);
+        else if (type == "get_group_members")
+            on_get_members(j);
+        else if (type == "get_group_messages")
+            on_get_group_msgs(j);
+        else if (type == "group_message")
+            on_group_msg(j);
+    }
+
+    // ——— 群组子函数（与之前基本一致，但用 queue_text/queue_json） ———
+    void on_create_group(json const &j) {
+        std::string name = j.value("group_name", "");
+        json resp = {{"type", "create_group_response"}};
+        if (name.empty()) {
+            resp["message"] = "群名不能为空";
+            queue_json(resp);
+            return;
+        }
+
+        sqlite3_stmt *st;
+        sqlite3_prepare_v2(g_db,
+                           "INSERT INTO groups(name,owner) VALUES(?,?);", -1, &st, 0);
+        sqlite3_bind_text(st, 1, name.c_str(), -1, SQLITE_STATIC);
+        sqlite3_bind_text(st, 2, username_.c_str(), -1, SQLITE_STATIC);
+        bool ok = sqlite3_step(st) == SQLITE_DONE;
+        sqlite3_finalize(st);
+        if (!ok) {
+            resp["message"] = "创建失败(重名)";
+            queue_json(resp);
+            return;
+        }
+
+        int gid = (int)sqlite3_last_insert_rowid(g_db);
+        exec_sql("INSERT INTO group_members(group_id,username,is_owner) VALUES(" + std::to_string(gid) + ",'" + username_ + "',1);");
+        resp["message"] = "群组创建成功";
+        resp["group"] = {{"id", gid}, {"name", name}, {"is_owner", true}};
+        queue_json(resp);
+        push_meta();
+    }
+    void on_add_member(json const &j) {
+        int gid = j.value("group_id", -1);
+        std::string user = j.value("username", "");
+        json resp = {{"type", "add_member_response"}};
+        if (gid < 0 || user.empty()) {
+            resp["message"] = "参数错误";
+            queue_json(resp);
+            return;
+        }
+        if (!is_owner(gid, username_)) {
+            resp["message"] = "只有群主能加人";
+            queue_json(resp);
+            return;
+        }
+
+        sqlite3_stmt *st;
+        sqlite3_prepare_v2(g_db,
+                           "INSERT OR IGNORE INTO group_members(group_id,username,is_owner)VALUES(?,?,0);",
+                           -1, &st, 0);
+        sqlite3_bind_int(st, 1, gid);
+        sqlite3_bind_text(st, 2, user.c_str(), -1, SQLITE_STATIC);
+        bool ok = sqlite3_step(st) == SQLITE_DONE;
+        sqlite3_finalize(st);
+        resp["message"] = ok ? "成员已添加" : "添加失败(可能已存在)";
+        queue_json(resp);
+        for (auto &s : g_sessions)
+            if (s->name() == user)
+                s->push_meta();
+    }
+    void on_remove_member(json const &j) {
+        int gid = j.value("group_id", -1);
+        std::string user = j.value("username", "");
+        json resp = {{"type", "remove_member_response"}};
+        if (gid < 0 || user.empty()) {
+            resp["message"] = "参数错误";
+            queue_json(resp);
+            return;
+        }
+        if (!is_owner(gid, username_)) {
+            resp["message"] = "只有群主能踢人";
+            queue_json(resp);
+            return;
+        }
+        if (user == username_) {
+            resp["message"] = "不能移除自己";
+            queue_json(resp);
+            return;
+        }
+
+        sqlite3_stmt *st;
+        sqlite3_prepare_v2(g_db,
+                           "DELETE FROM group_members WHERE group_id=? AND username=?;", -1, &st, 0);
+        sqlite3_bind_int(st, 1, gid);
+        sqlite3_bind_text(st, 2, user.c_str(), -1, SQLITE_STATIC);
+        bool ok = (sqlite3_step(st) == SQLITE_DONE && sqlite3_changes(g_db));
+        sqlite3_finalize(st);
+        resp["message"] = ok ? "成员已移除" : "移除失败";
+        queue_json(resp);
+        for (auto &s : g_sessions)
+            if (s->name() == user)
+                s->push_meta();
+    }
+    void on_get_members(json const &j) {
+        int gid = j.value("group_id", -1);
+        if (gid < 0)
+            return;
+        json resp = {{"type", "group_members"}, {"group_id", gid}, {"members", json::array()}};
+        sqlite3_stmt *st;
+        sqlite3_prepare_v2(g_db,
+                           "SELECT username,is_owner FROM group_members WHERE group_id=?;", -1, &st, 0);
+        sqlite3_bind_int(st, 1, gid);
+        while (sqlite3_step(st) == SQLITE_ROW) {
+            resp["members"].push_back({{"username", reinterpret_cast<const char *>(sqlite3_column_text(st, 0))},
+                                       {"is_owner", sqlite3_column_int(st, 1) != 0}});
+        }
+        sqlite3_finalize(st);
+        queue_json(resp);
+    }
+    void on_get_group_msgs(json const &j) {
+        int gid = j.value("group_id", -1);
+        if (gid < 0 || !user_in_group(gid, username_))
+            return;
+        json resp = {{"type", "group_messages"}, {"group_id", gid}, {"messages", json::array()}};
+        sqlite3_stmt *st;
+        sqlite3_prepare_v2(g_db,
+                           "SELECT sender,message,timestamp FROM group_messages "
+                           "WHERE group_id=? ORDER BY id DESC LIMIT 50;",
+                           -1, &st, 0);
+        sqlite3_bind_int(st, 1, gid);
+        while (sqlite3_step(st) == SQLITE_ROW) {
+            resp["messages"].push_back({{"sender", reinterpret_cast<const char *>(sqlite3_column_text(st, 0))},
+                                        {"message", reinterpret_cast<const char *>(sqlite3_column_text(st, 1))},
+                                        {"timestamp", reinterpret_cast<const char *>(sqlite3_column_text(st, 2))}});
+        }
+        sqlite3_finalize(st);
+        queue_json(resp);
+    }
+    void on_group_msg(json const &j) {
+        int gid = j.value("group_id", -1);
+        std::string content = j.value("content", "");
+        if (gid < 0 || content.empty() || !user_in_group(gid, username_))
+            return;
+
+        sqlite3_stmt *st;
+        sqlite3_prepare_v2(g_db,
+                           "INSERT INTO group_messages(group_id,sender,message)VALUES(?,?,?);", -1, &st, 0);
+        sqlite3_bind_int(st, 1, gid);
+        sqlite3_bind_text(st, 2, username_.c_str(), -1, SQLITE_STATIC);
+        sqlite3_bind_text(st, 3, content.c_str(), -1, SQLITE_STATIC);
+        sqlite3_step(st);
+        sqlite3_finalize(st);
+
+        std::string ts;
+        sqlite3_prepare_v2(g_db,
+                           "SELECT timestamp FROM group_messages WHERE id=last_insert_rowid();", -1, &st, 0);
+        if (sqlite3_step(st) == SQLITE_ROW)
+            ts = reinterpret_cast<const char *>(sqlite3_column_text(st, 0));
+        sqlite3_finalize(st);
+
+        json gm = {{"type", "group_message"}, {"group_id", gid}, {"sender", username_}, {"timestamp", ts}, {"formatted_message", "[" + ts + "] " + username_ + ": " + content}};
+        for (auto &s : g_sessions)
+            if (user_in_group(gid, s->name()))
+                s->queue_json(gm);
+    }
+}; // Session
+
+// ── broadcast_json：调用每个 Session 的 queue_json
+void broadcast_json(json const &j) {
+    for (auto &s : g_sessions)
+        s->push_json(j);
+}
+
+// ── 异步 accept
+void do_accept(boost::asio::io_context &ioc, tcp::acceptor &acc) {
+    acc.async_accept(
+        [&](boost::system::error_code ec, tcp::socket sock) {
+            if (!ec)
+                std::make_shared<Session>(std::move(sock))->start();
+            do_accept(ioc, acc);
         });
 }
 
+// ── main
 int main() {
+    if (!db_open())
+        return 1;
+    db_init();
     try {
-        // 初始化数据库
-        if (!open_db()) {
-            std::cerr << "数据库连接失败，退出..." << std::endl;
-            return 1;
-        }
-        init_db();
-
         boost::asio::io_context ioc{1};
-        tcp::acceptor acceptor{ioc, {tcp::v4(), 9002}};
-        std::set<std::shared_ptr<Session>> sessions;
-
-        std::cout << "聊天服务器启动，监听端口 9002" << std::endl;
-
-        do_accept(acceptor, ioc, sessions);
+        tcp::acceptor acc{ioc, {tcp::v4(), 9002}};
+        std::cout << "Chat server listening on :9002\n";
+        do_accept(ioc, acc);
         ioc.run();
-
-    } catch (std::exception &e) {
-        std::cerr << "错误: " << e.what() << std::endl;
+    } catch (std::exception const &e) {
+        std::cerr << "Fatal: " << e.what() << '\n';
     }
+    sqlite3_close(g_db);
     return 0;
 }

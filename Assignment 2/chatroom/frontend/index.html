@@ -17,13 +17,44 @@
             background-color: #f5f5f5;
         }
 
-        #user-list {
-            width: 200px;
+        #sidebar {
+            width: 250px;
             border-right: 1px solid #ddd;
-            padding: 10px;
-            overflow-y: auto;
             background-color: #fff;
             box-shadow: 0 0 5px rgba(0, 0, 0, 0.1);
+            display: flex;
+            flex-direction: column;
+        }
+
+        #sidebar-tabs {
+            display: flex;
+            border-bottom: 1px solid #ddd;
+        }
+
+        .sidebar-tab {
+            flex: 1;
+            text-align: center;
+            padding: 10px;
+            cursor: pointer;
+            background-color: #f0f0f0;
+        }
+
+        .sidebar-tab.active {
+            background-color: #fff;
+            border-bottom: 2px solid #2196F3;
+        }
+
+        #user-list,
+        #group-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px;
+            display: none;
+        }
+
+        #user-list.active,
+        #group-list.active {
+            display: block;
         }
 
         #chat {
@@ -68,7 +99,13 @@
             border-left: 3px solid #E91E63;
         }
 
-        .history-title, .separator {
+        .group-msg {
+            background-color: #e7ffe7;
+            border-left: 3px solid #4CAF50;
+        }
+
+        .history-title,
+        .separator {
             text-align: center;
             margin: 10px 0;
             color: #666;
@@ -108,7 +145,8 @@
             background-color: #0a6bbd;
         }
 
-        .user {
+        .user,
+        .group {
             padding: 8px;
             margin: 5px 0;
             cursor: pointer;
@@ -116,11 +154,18 @@
             transition: background-color 0.2s;
         }
 
-        .user:hover {
+        .user:hover,
+        .group:hover {
             background: #e3f2fd;
         }
 
-        .user-count {
+        .user.selected,
+        .group.selected {
+            background: #bbdefb;
+        }
+
+        .user-count,
+        .group-count {
             color: #666;
             margin: 10px 0;
             text-align: center;
@@ -134,6 +179,10 @@
             padding: 5px 10px;
             background-color: #f0f0f0;
             border-bottom: 1px solid #ddd;
+        }
+
+        #chat-target {
+            font-weight: bold;
         }
 
         #connection-status {
@@ -151,22 +200,219 @@
             background-color: #ffcdd2;
             color: #d32f2f;
         }
+
+        .group-actions {
+            display: flex;
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid #eee;
+        }
+
+        .group-actions button {
+            flex: 1;
+            padding: 5px;
+            border: none;
+            background-color: #2196F3;
+            color: white;
+            border-radius: 3px;
+            cursor: pointer;
+            margin: 0 5px;
+            font-size: 0.8em;
+        }
+
+        .group-actions button:hover {
+            background-color: #0b7dda;
+        }
+
+        /* 模态框样式 */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.4);
+        }
+
+        .modal-content {
+            background-color: #fefefe;
+            margin: 15% auto;
+            padding: 20px;
+            border: 1px solid #888;
+            width: 300px;
+            border-radius: 5px;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .modal-title {
+            margin: 0;
+            font-size: 1.2em;
+        }
+
+        .close-button {
+            color: #aaa;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        .close-button:hover {
+            color: black;
+        }
+
+        .modal-body {
+            margin-bottom: 15px;
+        }
+
+        .modal-footer {
+            text-align: right;
+        }
+
+        .modal-input {
+            width: 100%;
+            padding: 8px;
+            margin: 5px 0;
+            box-sizing: border-box;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+
+        .modal-button {
+            padding: 8px 15px;
+            background-color: #2196F3;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .modal-button:hover {
+            background-color: #0b7dda;
+        }
+
+        .modal-button.cancel {
+            background-color: #f44336;
+        }
+
+        .modal-button.cancel:hover {
+            background-color: #d32f2f;
+        }
+
+        .group-member {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 5px;
+            margin: 5px 0;
+            background-color: #f9f9f9;
+            border-radius: 4px;
+        }
+
+        .group-member-name {
+            flex: 1;
+        }
+
+        .group-member-role {
+            margin-left: 10px;
+            font-size: 0.8em;
+            color: #666;
+        }
+
+        .group-member-actions {
+            display: flex;
+        }
+
+        .remove-member {
+            color: #f44336;
+            cursor: pointer;
+            font-size: 1.2em;
+            margin-left: 10px;
+        }
+
+        .group-owner-badge {
+            background-color: #2196F3;
+            color: white;
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-size: 0.7em;
+            margin-left: 5px;
+        }
     </style>
 </head>
 
 <body>
-    <div id="user-list">
-        <h3>在线用户</h3>
+    <div id="sidebar">
+        <div id="sidebar-tabs">
+            <div class="sidebar-tab active" data-tab="user-list">用户</div>
+            <div class="sidebar-tab" data-tab="group-list">群组</div>
+        </div>
+        <div id="user-list" class="active">
+            <h3>在线用户</h3>
+        </div>
+        <div id="group-list">
+            <h3>我的群组</h3>
+            <div class="group-actions">
+                <button id="create-group-btn">创建群组</button>
+            </div>
+        </div>
     </div>
     <div id="chat">
         <div id="status-bar">
-            <span>聊天室</span>
+            <span>聊天对象: <span id="chat-target">大厅</span></span>
             <span id="connection-status" class="disconnected">连接中...</span>
         </div>
         <div id="message-container"></div>
         <div id="input-container">
-            <input type="text" id="input" placeholder="输入消息，@username 私信" autocomplete="off" />
+            <input type="text" id="input" placeholder="输入消息..." autocomplete="off" />
             <button id="send-button">发送</button>
+        </div>
+    </div>
+
+    <!-- 创建群组模态框 -->
+    <div id="create-group-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title">创建新群组</h3>
+                <span class="close-button">&times;</span>
+            </div>
+            <div class="modal-body">
+                <input type="text" id="group-name-input" class="modal-input" placeholder="输入群组名称">
+            </div>
+            <div class="modal-footer">
+                <button id="create-group-confirm" class="modal-button">创建</button>
+                <button class="modal-button cancel close-modal">取消</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 管理群组成员模态框 -->
+    <div id="manage-members-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title">群组成员</h3>
+                <span class="close-button">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div id="members-list"></div>
+                <div id="add-member-container">
+                    <h4>添加成员</h4>
+                    <div style="display: flex;">
+                        <input type="text" id="new-member-input" class="modal-input" placeholder="输入用户名">
+                        <button id="add-member-btn" class="modal-button">添加</button>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="modal-button close-modal">关闭</button>
+            </div>
         </div>
     </div>
 
