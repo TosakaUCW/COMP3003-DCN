@@ -18,6 +18,36 @@ using tcp = boost::asio::ip::tcp;
 namespace ws = boost::beast::websocket;
 using json = nlohmann::json;
 
+#include <openssl/evp.h>
+#include <openssl/rand.h>
+
+constexpr size_t SALT_LEN = 16;
+constexpr size_t HASH_LEN = 32;
+
+std::array<unsigned char, SALT_LEN> gen_salt() {
+    std::array<unsigned char, SALT_LEN> s{};
+    RAND_bytes(s.data(), SALT_LEN);
+    return s;
+}
+
+std::array<unsigned char, HASH_LEN>
+hash_password(const std::array<unsigned char, SALT_LEN> &salt,
+              const std::string &password) {
+    std::array<unsigned char, HASH_LEN> out{};
+
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr);
+
+    EVP_DigestUpdate(ctx, salt.data(), SALT_LEN);
+    EVP_DigestUpdate(ctx, password.data(), password.size());
+
+    unsigned int len = 0;
+    EVP_DigestFinal_ex(ctx, out.data(), &len);
+    EVP_MD_CTX_free(ctx);
+
+    return out;
+}
+
 // ────────── SQLite 基础 ──────────
 sqlite3 *g_db = nullptr;
 constexpr char DB_FILE[] = "chatserver.db";
@@ -55,7 +85,8 @@ void db_init() {
     /* ── 业务表 ─────────────────────────────────── */
     exec_sql("CREATE TABLE IF NOT EXISTS users ("
              " username TEXT PRIMARY KEY,"
-             " password TEXT NOT NULL);");
+             " salt     BLOB NOT NULL,"    // 16 bytes
+             " hash     BLOB NOT NULL);"); // 32 bytes SHA-256
 
     exec_sql("CREATE TABLE IF NOT EXISTS messages ("
              " id        INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -117,29 +148,49 @@ bool user_exists(std::string const &u) {
     sqlite3_finalize(st);
     return ok;
 }
-bool verify_user(std::string const &u, std::string const &p) {
+bool verify_user(const std::string &u, const std::string &p) {
     sqlite3_stmt *st;
-    sqlite3_prepare_v2(g_db, "SELECT password FROM users WHERE username=?;", -1, &st, 0);
+    sqlite3_prepare_v2(g_db,
+                       "SELECT salt,hash FROM users WHERE username=?;", -1, &st, 0);
     sqlite3_bind_text(st, 1, u.c_str(), -1, SQLITE_STATIC);
+
     bool ok = false;
-    if (sqlite3_step(st) == SQLITE_ROW)
-        ok = p == reinterpret_cast<const char *>(sqlite3_column_text(st, 0));
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        const void *salt_blob = sqlite3_column_blob(st, 0);
+        const void *hash_blob = sqlite3_column_blob(st, 1);
+        if (salt_blob && hash_blob) {
+            std::array<unsigned char, SALT_LEN> salt;
+            std::array<unsigned char, HASH_LEN> hash_db;
+            std::memcpy(salt.data(), salt_blob, SALT_LEN);
+            std::memcpy(hash_db.data(), hash_blob, HASH_LEN);
+
+            auto hash_in = hash_password(salt, p);
+            ok = std::memcmp(hash_in.data(), hash_db.data(), HASH_LEN) == 0;
+        }
+    }
     sqlite3_finalize(st);
     return ok;
 }
-bool register_user(std::string const &u, std::string const &p) {
+
+bool register_user(const std::string &u, const std::string &p) {
     if (user_exists(u))
         return false;
+
+    auto salt = gen_salt();
+    auto hash = hash_password(salt, p);
+
     sqlite3_stmt *st;
     sqlite3_prepare_v2(g_db,
-                       "INSERT INTO users(username,password) VALUES(?,?);",
-                       -1, &st, 0);
+                       "INSERT INTO users(username,salt,hash) VALUES(?,?,?);", -1, &st, 0);
     sqlite3_bind_text(st, 1, u.c_str(), -1, SQLITE_STATIC);
-    sqlite3_bind_text(st, 2, p.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_blob(st, 2, salt.data(), SALT_LEN, SQLITE_STATIC);
+    sqlite3_bind_blob(st, 3, hash.data(), HASH_LEN, SQLITE_STATIC);
+
     bool ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
     return ok;
 }
+
 static sqlite3_stmt *ins_msg_stmt = nullptr;
 void insert_message(const std::string &sender,
                     const std::string &receiver,

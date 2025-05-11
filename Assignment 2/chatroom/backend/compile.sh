@@ -18,6 +18,8 @@ echo "使用 SQLite 头文件路径: $SQLITE_INCLUDE"
 SQLITE_LIB=`brew --prefix sqlite`/lib
 echo "使用 SQLite 库文件路径: $SQLITE_LIB"
 
+OPENSSL_PREFIX=$(brew --prefix openssl@3)
+
 # JSON 库路径在 server.cpp 中直接硬编码了，所以这里不需要特殊处理
 
 # 编译
@@ -28,7 +30,9 @@ g++ -std=c++17 -o chatserver server.cpp \
   -L$BOOST_LIB \
   -L$SQLITE_LIB \
   -I/opt/homebrew/include/ \
-  -lboost_system -lsqlite3 -pthread
+  -lboost_system -lsqlite3 -pthread \
+  -I${OPENSSL_PREFIX}/include -L${OPENSSL_PREFIX}/lib \
+  -lcrypto
 
 # 检查编译是否成功
 if [ $? -eq 0 ]; then
