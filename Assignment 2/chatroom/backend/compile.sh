@@ -20,7 +20,7 @@ echo "使用 SQLite 库文件路径: $SQLITE_LIB"
 
 # 编译
 echo "开始编译..."
-g++ -std=c++14 -o chatserver server.cpp \
+g++ -std=c++17 -o chatserver server.cpp \
   -I$BOOST_INCLUDE \
   -I$SQLITE_INCLUDE \
   -L$BOOST_LIB \
