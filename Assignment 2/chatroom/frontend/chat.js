@@ -25,6 +25,8 @@ let currentState = {
     onlineUsers: []
 };
 
+let membersRequestPending = false;   // 是否已向服务器请求成员列表但尚未收到
+
 // 更新连接状态
 function updateConnectionStatus(status) {
     connectionStatus.textContent = status;
@@ -309,12 +311,12 @@ function updateGroupsList(groups) {
                 selectedUser.classList.remove('selected');
             }
 
-            // 获取群组成员列表
-            const getMembersRequest = {
-                type: 'get_group_members',
-                group_id: group.id
-            };
-            ws.send(JSON.stringify(getMembersRequest));
+            // // 获取群组成员列表
+            // const getMembersRequest = {
+            //     type: 'get_group_members',
+            //     group_id: group.id
+            // };
+            // ws.send(JSON.stringify(getMembersRequest));
 
             // 获取群组消息历史
             const getMessagesRequest = {
@@ -333,22 +335,21 @@ function updateGroupsList(groups) {
             manageBtn.style.padding = '2px 5px';
 
             manageBtn.addEventListener('click', (e) => {
-                e.stopPropagation(); // 阻止事件冒泡，防止触发群组点击事件
+                e.stopPropagation();                       // 阻止冒泡
 
-                // 打开管理成员模态框
-                currentState.selectedGroup = group;
-
-                // 获取最新成员列表
-                const getMembersRequest = {
-                    type: 'get_group_members',
-                    group_id: group.id
-                };
-                ws.send(JSON.stringify(getMembersRequest));
-
-                // 设置模态框标题
+                currentState.selectedGroup = group;        // 记住当前群
                 document.querySelector('#manage-members-modal .modal-title').textContent =
                     `群组 "${group.name}" 成员管理`;
 
+                // === 只在需要时才去服务器拉数据 =========================
+                if (!membersRequestPending) {              // 避免并发重复
+                    membersRequestPending = true;
+                    ws.send(JSON.stringify({
+                        type: 'get_group_members',
+                        group_id: group.id
+                    }));
+                }
+                // 打开弹窗
                 manageGroupModal.style.display = 'block';
             });
 
@@ -372,7 +373,12 @@ function updateGroupMembers(groupId, members) {
     const membersList = document.getElementById('members-list');
     membersList.innerHTML = '';
 
+    const seen = new Set();
+
     members.forEach(member => {
+        if (seen.has(member.username)) return;   // 已出现，跳过
+        seen.add(member.username);
+        // ------------------ 原来创建 DOM 的代码 ------------------
         const memberDiv = document.createElement('div');
         memberDiv.classList.add('group-member');
 
@@ -421,6 +427,9 @@ function updateGroupMembers(groupId, members) {
     } else {
         addMemberContainer.style.display = 'none';
     }
+
+    // 标记已完成本次请求，允许下次再发
+    membersRequestPending = false;
 }
 
 // 显示群组消息历史

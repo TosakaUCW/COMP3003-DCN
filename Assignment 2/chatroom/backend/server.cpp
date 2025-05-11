@@ -46,22 +46,59 @@ bool db_open() {
     return true;
 }
 void db_init() {
-    exec_sql("PRAGMA foreign_keys=ON;");
-    exec_sql("CREATE TABLE IF NOT EXISTS users("
-             "username TEXT PRIMARY KEY, password TEXT NOT NULL);");
-    exec_sql("CREATE TABLE IF NOT EXISTS messages("
-             "id INTEGER PRIMARY KEY AUTOINCREMENT, sender TEXT, receiver TEXT, "
-             "message TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);");
-    exec_sql("CREATE TABLE IF NOT EXISTS groups("
-             "id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, owner TEXT);");
-    exec_sql("CREATE TABLE IF NOT EXISTS group_members("
-             "id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER, username TEXT, "
-             "is_owner INTEGER DEFAULT 0, UNIQUE(group_id,username), "
-             "FOREIGN KEY(group_id) REFERENCES groups(id) ON DELETE CASCADE);");
-    exec_sql("CREATE TABLE IF NOT EXISTS group_messages("
-             "id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER, sender TEXT, "
-             "message TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, "
-             "FOREIGN KEY(group_id) REFERENCES groups(id) ON DELETE CASCADE);");
+    /* ── 运行时优化 ─────────────────────────────── */
+    exec_sql("PRAGMA journal_mode=WAL;");   // 读写并发
+    exec_sql("PRAGMA synchronous=NORMAL;"); // 更快落盘
+    exec_sql("PRAGMA busy_timeout=3000;");  // 写锁最多等 3s
+    exec_sql("PRAGMA foreign_keys = ON;");
+
+    /* ── 业务表 ─────────────────────────────────── */
+    exec_sql("CREATE TABLE IF NOT EXISTS users ("
+             " username TEXT PRIMARY KEY,"
+             " password TEXT NOT NULL);");
+
+    exec_sql("CREATE TABLE IF NOT EXISTS messages ("
+             " id        INTEGER PRIMARY KEY AUTOINCREMENT,"
+             " sender    TEXT,"
+             " receiver  TEXT," // 'all' 表示公共
+             " message   TEXT,"
+             " timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);");
+
+    exec_sql("CREATE TABLE IF NOT EXISTS groups ("
+             " id     INTEGER PRIMARY KEY AUTOINCREMENT,"
+             " name   TEXT UNIQUE,"
+             " owner  TEXT);");
+
+    exec_sql("CREATE TABLE IF NOT EXISTS group_members ("
+             " id        INTEGER PRIMARY KEY AUTOINCREMENT,"
+             " group_id  INTEGER,"
+             " username  TEXT,"
+             " is_owner  INTEGER DEFAULT 0,"
+             " UNIQUE(group_id,username),"
+             " FOREIGN KEY(group_id) REFERENCES groups(id) ON DELETE CASCADE);");
+
+    exec_sql("CREATE TABLE IF NOT EXISTS group_messages ("
+             " id        INTEGER PRIMARY KEY AUTOINCREMENT,"
+             " group_id  INTEGER,"
+             " sender    TEXT,"
+             " message   TEXT,"
+             " timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,"
+             " FOREIGN KEY(group_id) REFERENCES groups(id) ON DELETE CASCADE);");
+
+    /* ── 辅助日志表（可选） ─────────────────────── */
+    exec_sql("CREATE TABLE IF NOT EXISTS events ("
+             " id      INTEGER PRIMARY KEY AUTOINCREMENT,"
+             " type    TEXT,"
+             " actor   TEXT,"
+             " payload TEXT," // JSON 字符串
+             " ts DATETIME DEFAULT CURRENT_TIMESTAMP);");
+
+    /* ── 高频列索引 ─────────────────────────────── */
+    exec_sql("CREATE INDEX IF NOT EXISTS idx_messages_receiver ON messages(receiver);");
+    exec_sql("CREATE INDEX IF NOT EXISTS idx_messages_time     ON messages(timestamp);");
+
+    exec_sql("CREATE INDEX IF NOT EXISTS idx_grp_msg_gid_id    ON group_messages(group_id,id);");
+    exec_sql("CREATE INDEX IF NOT EXISTS idx_grp_mem_gid_user  ON group_members(group_id,username);");
 }
 
 // ── 前向声明
@@ -103,28 +140,47 @@ bool register_user(std::string const &u, std::string const &p) {
     sqlite3_finalize(st);
     return ok;
 }
-void save_public(std::string const &sender, std::string const &msg) {
-    sqlite3_stmt *st;
-    sqlite3_prepare_v2(g_db,
-                       "INSERT INTO messages(sender,receiver,message) VALUES(?,?,?);",
-                       -1, &st, 0);
-    sqlite3_bind_text(st, 1, sender.c_str(), -1, SQLITE_STATIC);
-    sqlite3_bind_text(st, 2, "all", -1, SQLITE_STATIC);
-    sqlite3_bind_text(st, 3, msg.c_str(), -1, SQLITE_STATIC);
-    sqlite3_step(st);
-    sqlite3_finalize(st);
+static sqlite3_stmt *ins_msg_stmt = nullptr;
+void insert_message(const std::string &sender,
+                    const std::string &receiver,
+                    const std::string &body) {
+    if (!ins_msg_stmt) {
+        sqlite3_prepare_v2(g_db,
+                           "INSERT INTO messages(sender,receiver,message) VALUES(?,?,?);",
+                           -1, &ins_msg_stmt, 0);
+    }
+    sqlite3_reset(ins_msg_stmt);
+    sqlite3_bind_text(ins_msg_stmt, 1, sender.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(ins_msg_stmt, 2, receiver.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(ins_msg_stmt, 3, body.c_str(), -1, SQLITE_STATIC);
+
+    // 按 100 条为批量阈值；也可以直接 BEGIN/COMMIT 每条，看场景
+    static int pending = 0;
+    if (pending == 0)
+        exec_sql("BEGIN;");
+    sqlite3_step(ins_msg_stmt);
+    if (++pending >= 100) {
+        exec_sql("COMMIT;");
+        pending = 0;
+    }
 }
-void save_private(std::string const &sender, std::string const &target,
-                  std::string const &msg) {
-    sqlite3_stmt *st;
-    sqlite3_prepare_v2(g_db,
-                       "INSERT INTO messages(sender,receiver,message) VALUES(?,?,?);",
-                       -1, &st, 0);
-    sqlite3_bind_text(st, 1, sender.c_str(), -1, SQLITE_STATIC);
-    sqlite3_bind_text(st, 2, target.c_str(), -1, SQLITE_STATIC);
-    sqlite3_bind_text(st, 3, msg.c_str(), -1, SQLITE_STATIC);
-    sqlite3_step(st);
-    sqlite3_finalize(st);
+static sqlite3_stmt *ins_grp_msg_stmt = nullptr;
+int insert_group_message(int gid, const std::string &sender, const std::string &body) {
+    if (!ins_grp_msg_stmt) {
+        sqlite3_prepare_v2(g_db,
+                           "INSERT INTO group_messages(group_id,sender,message) VALUES(?,?,?);",
+                           -1, &ins_grp_msg_stmt, 0);
+    }
+    sqlite3_reset(ins_grp_msg_stmt);
+    sqlite3_bind_int(ins_grp_msg_stmt, 1, gid);
+    sqlite3_bind_text(ins_grp_msg_stmt, 2, sender.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(ins_grp_msg_stmt, 3, body.c_str(), -1, SQLITE_STATIC);
+
+    exec_sql("BEGIN;");
+    sqlite3_step(ins_grp_msg_stmt);
+    exec_sql("COMMIT;");
+
+    return (int)sqlite3_last_insert_rowid(g_db); // 返回 id 方便取 timestamp
 }
 bool user_in_group(int gid, std::string const &u) {
     sqlite3_stmt *st;
@@ -149,6 +205,60 @@ bool is_owner(int gid, std::string const &u) {
         owner = sqlite3_column_int(st, 0) != 0;
     sqlite3_finalize(st);
     return owner;
+}
+
+static sqlite3_stmt *ins_mem_stmt = nullptr;
+bool insert_group_member(int gid, const std::string &user, bool owner_flag) {
+    if (!ins_mem_stmt) {
+        sqlite3_prepare_v2(g_db,
+                           "INSERT OR IGNORE INTO group_members(group_id,username,is_owner)"
+                           " VALUES(?,?,?);",
+                           -1, &ins_mem_stmt, nullptr);
+    }
+    sqlite3_reset(ins_mem_stmt);
+    sqlite3_bind_int(ins_mem_stmt, 1, gid);
+    sqlite3_bind_text(ins_mem_stmt, 2, user.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_int(ins_mem_stmt, 3, owner_flag ? 1 : 0);
+
+    exec_sql("BEGIN;");
+    sqlite3_step(ins_mem_stmt);
+    exec_sql("COMMIT;");
+
+    /* 插入成功时 sqlite3_changes(g_db) == 1 */
+    return sqlite3_changes(g_db) == 1;
+}
+static sqlite3_stmt *del_mem_stmt = nullptr;
+bool remove_group_member(int gid, const std::string &user) {
+    if (!del_mem_stmt) {
+        sqlite3_prepare_v2(g_db,
+                           "DELETE FROM group_members WHERE group_id=? AND username=?;",
+                           -1, &del_mem_stmt, nullptr);
+    }
+    sqlite3_reset(del_mem_stmt);
+    sqlite3_bind_int(del_mem_stmt, 1, gid);
+    sqlite3_bind_text(del_mem_stmt, 2, user.c_str(), -1, SQLITE_STATIC);
+
+    exec_sql("BEGIN;");
+    sqlite3_step(del_mem_stmt);
+    exec_sql("COMMIT;");
+
+    return sqlite3_changes(g_db) == 1;
+}
+json query_group_members(int gid) {
+    sqlite3_stmt *st = nullptr;
+    json members = json::array();
+
+    sqlite3_prepare_v2(g_db,
+                       "SELECT username,is_owner FROM group_members WHERE group_id=?;",
+                       -1, &st, nullptr);
+    sqlite3_bind_int(st, 1, gid);
+
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        members.push_back({{"username", reinterpret_cast<const char *>(sqlite3_column_text(st, 0))},
+                           {"is_owner", sqlite3_column_int(st, 1) != 0}});
+    }
+    sqlite3_finalize(st);
+    return members;
 }
 
 // ─────────────────────── Session ───────────────────────
@@ -359,7 +469,7 @@ class Session : public std::enable_shared_from_this<Session> {
                     s->queue_text(out);
                 }
             queue_text(out); // 回显
-            save_private(username_, target, out);
+            insert_message(username_, target, out);
             if (!found)
                 queue_text("系统: 用户 " + target + " 不在线或不存在");
             return;
@@ -369,7 +479,8 @@ class Session : public std::enable_shared_from_this<Session> {
         std::string out = now_str() + " " + username_ + " : " + raw;
         for (auto &s : g_sessions)
             s->queue_text(out);
-        save_public(username_, out);
+        insert_message(username_, "all", out);
+        ;
     }
 
     // ——— JSON 协议 ———
@@ -419,7 +530,8 @@ class Session : public std::enable_shared_from_this<Session> {
         }
 
         int gid = (int)sqlite3_last_insert_rowid(g_db);
-        exec_sql("INSERT INTO group_members(group_id,username,is_owner) VALUES(" + std::to_string(gid) + ",'" + username_ + "',1);");
+        // exec_sql("INSERT INTO group_members(group_id,username,is_owner) VALUES(" + std::to_string(gid) + ",'" + username_ + "',1);");
+        insert_group_member(gid, username_, /*owner_flag=*/true);
         resp["message"] = "群组创建成功";
         resp["group"] = {{"id", gid}, {"name", name}, {"is_owner", true}};
         queue_json(resp);
@@ -446,7 +558,8 @@ class Session : public std::enable_shared_from_this<Session> {
                            -1, &st, 0);
         sqlite3_bind_int(st, 1, gid);
         sqlite3_bind_text(st, 2, user.c_str(), -1, SQLITE_STATIC);
-        bool ok = sqlite3_step(st) == SQLITE_DONE;
+        // bool ok = sqlite3_step(st) == SQLITE_DONE;
+        bool ok = insert_group_member(gid, user, false);
         sqlite3_finalize(st);
         resp["message"] = ok ? "成员已添加" : "添加失败(可能已存在)";
         queue_json(resp);
@@ -479,7 +592,8 @@ class Session : public std::enable_shared_from_this<Session> {
                            "DELETE FROM group_members WHERE group_id=? AND username=?;", -1, &st, 0);
         sqlite3_bind_int(st, 1, gid);
         sqlite3_bind_text(st, 2, user.c_str(), -1, SQLITE_STATIC);
-        bool ok = (sqlite3_step(st) == SQLITE_DONE && sqlite3_changes(g_db));
+        // bool ok = (sqlite3_step(st) == SQLITE_DONE && sqlite3_changes(g_db));
+        bool ok = remove_group_member(gid, user);
         sqlite3_finalize(st);
         resp["message"] = ok ? "成员已移除" : "移除失败";
         queue_json(resp);
@@ -491,7 +605,8 @@ class Session : public std::enable_shared_from_this<Session> {
         int gid = j.value("group_id", -1);
         if (gid < 0)
             return;
-        json resp = {{"type", "group_members"}, {"group_id", gid}, {"members", json::array()}};
+        // json resp = {{"type", "group_members"}, {"group_id", gid}, {"members", json::array()}};
+        json resp = {{"type", "group_members"}, {"group_id", gid}, {"members", query_group_members(gid)}};
         sqlite3_stmt *st;
         sqlite3_prepare_v2(g_db,
                            "SELECT username,is_owner FROM group_members WHERE group_id=?;", -1, &st, 0);
@@ -523,31 +638,42 @@ class Session : public std::enable_shared_from_this<Session> {
         queue_json(resp);
     }
     void on_group_msg(json const &j) {
+        /* 1. 基本合法性检查 */
         int gid = j.value("group_id", -1);
         std::string content = j.value("content", "");
-        if (gid < 0 || content.empty() || !user_in_group(gid, username_))
+        if (gid < 0 || content.empty())
             return;
+        if (!user_in_group(gid, username_))
+            return; // 非群成员直接忽略
 
-        sqlite3_stmt *st;
-        sqlite3_prepare_v2(g_db,
-                           "INSERT INTO group_messages(group_id,sender,message)VALUES(?,?,?);", -1, &st, 0);
-        sqlite3_bind_int(st, 1, gid);
-        sqlite3_bind_text(st, 2, username_.c_str(), -1, SQLITE_STATIC);
-        sqlite3_bind_text(st, 3, content.c_str(), -1, SQLITE_STATIC);
-        sqlite3_step(st);
-        sqlite3_finalize(st);
+        /* 2. 写入数据库并取 timestamp */
+        int row_id = insert_group_message(gid, username_, content);
 
         std::string ts;
+        sqlite3_stmt *ts_stmt = nullptr;
         sqlite3_prepare_v2(g_db,
-                           "SELECT timestamp FROM group_messages WHERE id=last_insert_rowid();", -1, &st, 0);
-        if (sqlite3_step(st) == SQLITE_ROW)
-            ts = reinterpret_cast<const char *>(sqlite3_column_text(st, 0));
-        sqlite3_finalize(st);
+                           "SELECT timestamp FROM group_messages WHERE id=?;",
+                           -1, &ts_stmt, nullptr);
+        sqlite3_bind_int(ts_stmt, 1, row_id);
+        if (sqlite3_step(ts_stmt) == SQLITE_ROW) {
+            ts = reinterpret_cast<const char *>(sqlite3_column_text(ts_stmt, 0));
+        }
+        sqlite3_finalize(ts_stmt);
 
-        json gm = {{"type", "group_message"}, {"group_id", gid}, {"sender", username_}, {"timestamp", ts}, {"formatted_message", "[" + ts + "] " + username_ + ": " + content}};
-        for (auto &s : g_sessions)
+        /* 3. 组装前端需要的 JSON */
+        json gm = {
+            {"type", "group_message"},
+            {"group_id", gid},
+            {"sender", username_},
+            {"timestamp", ts},
+            {"formatted_message",
+             "[" + ts + "] " + username_ + ": " + content}};
+
+        /* 4. 广播给群内所有在线成员 */
+        for (auto &s : g_sessions) {
             if (user_in_group(gid, s->name()))
-                s->queue_json(gm);
+                s->push_json(gm); // push_json 是我们在 Session public 区域暴露的包装
+        }
     }
 }; // Session
 
