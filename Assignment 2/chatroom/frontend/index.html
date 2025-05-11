@@ -1,19 +1,20 @@
-<!-- frontend/index.html -->
+<!-- chatroom/frontend/index.html -->
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 
 <head>
     <meta charset="UTF-8" />
     <meta http-equiv="X-UA-Compatible" content="IE=edge" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Chat Room</title>
+    <title>聊天室</title>
     <style>
         body {
-            font-family: Arial, sans-serif;
+            font-family: 'Microsoft YaHei', Arial, sans-serif;
             margin: 0;
             padding: 0;
             display: flex;
             height: 100vh;
+            background-color: #f5f5f5;
         }
 
         #user-list {
@@ -21,6 +22,8 @@
             border-right: 1px solid #ddd;
             padding: 10px;
             overflow-y: auto;
+            background-color: #fff;
+            box-shadow: 0 0 5px rgba(0, 0, 0, 0.1);
         }
 
         #chat {
@@ -38,29 +41,115 @@
 
         .message {
             margin-bottom: 8px;
+            padding: 8px;
+            border-radius: 4px;
+            max-width: 80%;
+            word-break: break-all;
+        }
+
+        .user-msg {
+            background-color: #e7f4ff;
+            border-left: 3px solid #2196F3;
         }
 
         .system-msg {
             color: #888;
             font-style: italic;
+            background-color: #f0f0f0;
+            padding: 5px;
+            border-radius: 4px;
+            text-align: center;
+            margin: 5px auto;
+            max-width: 90%;
+        }
+
+        .private-msg {
+            background-color: #ffe7f0;
+            border-left: 3px solid #E91E63;
+        }
+
+        .history-title, .separator {
+            text-align: center;
+            margin: 10px 0;
+            color: #666;
+            font-weight: bold;
+            border-bottom: 1px dashed #ccc;
+            padding-bottom: 5px;
+        }
+
+        #input-container {
+            display: flex;
+            border-top: 1px solid #ddd;
+            background-color: #fff;
         }
 
         #input {
+            flex: 1;
             border: none;
-            border-top: 1px solid #ddd;
             padding: 10px;
             font-size: 1rem;
-            width: 100%;
-            box-sizing: border-box;
+            outline: none;
+        }
+
+        #send-button {
+            border: none;
+            background-color: #2196F3;
+            color: white;
+            padding: 0 20px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+
+        #send-button:hover {
+            background-color: #0b7dda;
+        }
+
+        #send-button:active {
+            background-color: #0a6bbd;
         }
 
         .user {
-            padding: 5px;
+            padding: 8px;
+            margin: 5px 0;
             cursor: pointer;
+            border-radius: 4px;
+            transition: background-color 0.2s;
         }
 
         .user:hover {
-            background: #eef;
+            background: #e3f2fd;
+        }
+
+        .user-count {
+            color: #666;
+            margin: 10px 0;
+            text-align: center;
+            font-size: 0.9em;
+        }
+
+        #status-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 5px 10px;
+            background-color: #f0f0f0;
+            border-bottom: 1px solid #ddd;
+        }
+
+        #connection-status {
+            font-size: 0.8em;
+            padding: 3px 8px;
+            border-radius: 10px;
+        }
+
+        .connected {
+            background-color: #c8e6c9;
+            color: #388e3c;
+        }
+
+        .disconnected {
+            background-color: #ffcdd2;
+            color: #d32f2f;
         }
     </style>
 </head>
@@ -70,8 +159,15 @@
         <h3>在线用户</h3>
     </div>
     <div id="chat">
+        <div id="status-bar">
+            <span>聊天室</span>
+            <span id="connection-status" class="disconnected">连接中...</span>
+        </div>
         <div id="message-container"></div>
-        <input type="text" id="input" placeholder="输入消息，@username 私信" autocomplete="off" />
+        <div id="input-container">
+            <input type="text" id="input" placeholder="输入消息，@username 私信" autocomplete="off" />
+            <button id="send-button">发送</button>
+        </div>
     </div>
 
     <script src="chat.js"></script>
