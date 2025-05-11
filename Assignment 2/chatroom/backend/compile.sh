@@ -1,7 +1,5 @@
 #!/bin/bash
 
-# 带群组功能的聊天室编译脚本 - 修复版
-
 # 确定 Boost 头文件路径
 BOOST_INCLUDE=`brew --prefix boost`/include
 echo "使用 Boost 头文件路径: $BOOST_INCLUDE"
