@@ -149,6 +149,11 @@ ws.addEventListener('message', event => {
             // 处理通知消息
             appendMessage('系统: ' + jsonMsg.message, 'system-msg');
         }
+        else if (jsonMsg.type === 'history') {
+            // 登录后收到最近 20 条公共聊天记录
+            displayHistory(jsonMsg.messages);
+        }
+        
         return;
     } catch (e) {
         // 如果不是JSON，按普通消息处理
@@ -469,6 +474,33 @@ function displayGroupMessages(groupId, messages) {
 function handleGroupMessage(message) {
     appendMessage(message.formatted_message, 'group-msg');
 }
+
+// 把服务器发来的 history 数组渲染到 messageContainer
+function displayHistory(messages) {
+    if (!messages || messages.length === 0) return;
+
+    // 在最上方插入标题
+    const historyTitle = document.createElement('div');
+    historyTitle.classList.add('history-title');
+    historyTitle.textContent = '=== 最近消息历史 ===';
+    messageContainer.appendChild(historyTitle);
+
+    // 服务器按 id DESC 排，我们倒序遍历保证时间正序
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const line = messages[i].raw;   // 原始字符串已含时间戳 + 发送者
+        let type   = 'user-msg';
+        if (line.includes('(私)'))  type = 'private-msg';
+        else if (line.includes('[群:')) type = 'group-msg';
+        appendMessage(line, type);
+    }
+
+    // 尾部分隔线
+    const separator = document.createElement('div');
+    separator.classList.add('separator');
+    separator.textContent = '=== 以上是历史消息 ===';
+    messageContainer.appendChild(separator);
+}
+
 
 // 添加消息到聊天窗口
 function appendMessage(msg, type = 'user-msg') {
