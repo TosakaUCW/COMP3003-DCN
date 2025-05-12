@@ -69,3 +69,6 @@ ans.html
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+
+# 忽略编译出来的二进制文件
+chatserver
