@@ -62,5 +62,10 @@ ans.html
 
 .DS_Store
 
-# database files
+# 忽略 SQLite 数据库文件
 *.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
