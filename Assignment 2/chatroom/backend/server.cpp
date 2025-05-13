@@ -572,7 +572,6 @@ class Session : public std::enable_shared_from_this<Session> {
             on_group_msg(j);
     }
 
-    // ——— 群组子函数（与之前基本一致，但用 queue_text/queue_json） ———
     void on_create_group(json const &j) {
         std::string name = j.value("group_name", "");
         json resp = {{"type", "create_group_response"}};
