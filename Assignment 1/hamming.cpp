@@ -14,8 +14,8 @@ using pii = std::pair<int, int>;
 
 void solve() {
     string s;
-    // cin >> s;
-    s = "111111100110";
+    cin >> s;
+    // s = "111111100110";
     // s = "110110101010";
     
     int n = s.size();
